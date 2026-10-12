@@ -1,0 +1,12 @@
+{
+  "name": "soil-drip-simulation",
+  "version": "0.0.1",
+  "description": "5x5 virtual soil drip simulation blocks for micro:bit MakeCode",
+  "dependencies": {
+    "core": "*"
+  },
+  "files": [
+    "main.ts"
+  ],
+  "public": true
+}
