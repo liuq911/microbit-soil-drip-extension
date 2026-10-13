@@ -1,36 +1,46 @@
-//% color="#3C9D4E" weight=90 icon="\uf043" block="土壤滴灌"
-namespace SoilDrip {
-    let DRY_VALUE = 800
-    let WET_VALUE = 30
-    let DROP_AMOUNT = 90
-    let SPREAD_PERCENT = 72
+//% color="#3C9D4E" weight=90 icon="\uf043" block="土壤滴灌挑戰"
+namespace SoilDripChallenge {
+    let LEVEL_VALUE: number[] = [800, 608, 415, 223, 30]
+    let CELL_DELAY_MS = 1000
 
-    let soil: number[] = []
-    let nextSoil: number[] = []
-
+    let soilLevel: number[] = []
     let sensorDistance = 0
     let sensorX = 2
     let sensorY = 2
 
+    let targetLevel = 2
+    let targetValue = 415
+    let dropCount = 0
     let started = false
     let startTime = 0
+    let stopDripping = false
+
+    let aEnabled = false
+    let bEnabled = false
 
     function ensureInit() {
-        if (soil.length == 25) return
+        if (soilLevel.length == 25) return
 
-        soil = []
-        nextSoil = []
-
+        soilLevel = []
         for (let i = 0; i <= 24; i++) {
-            soil.push(0)
-            nextSoil.push(0)
+            soilLevel.push(0)
         }
+    }
+
+    function resetState() {
+        soilLevel = []
+        ensureInit()
 
         sensorDistance = 0
         sensorX = 2
         sensorY = 2
+
+        dropCount = 0
         started = false
         startTime = 0
+        stopDripping = false
+
+        basic.clearScreen()
     }
 
     function setSensorPositionInternal() {
@@ -52,163 +62,222 @@ namespace SoilDrip {
         }
     }
 
-    function moistureToBrightness(moisture: number): number {
-        if (moisture <= 0) return 0
-        let brightness = 35 + Math.round(moisture * 220 / 255)
-        if (brightness > 255) brightness = 255
-        return brightness
+    function cellDistance(x: number, y: number): number {
+        return Math.abs(x - 2) + Math.abs(y - 2)
     }
 
-    function moistureToSensorValue(moisture: number): number {
-        let value = DRY_VALUE - Math.round(
-            moisture * (DRY_VALUE - WET_VALUE) / 255
-        )
-        if (value < WET_VALUE) value = WET_VALUE
-        if (value > DRY_VALUE) value = DRY_VALUE
-        return value
+    function levelToBrightness(level: number): number {
+        if (level <= 0) return 0
+        if (level == 1) return 70
+        if (level == 2) return 130
+        if (level == 3) return 195
+        return 255
     }
 
-    function drawSoilInternal() {
+    function drawSoil() {
         ensureInit()
 
         for (let y = 0; y <= 4; y++) {
             for (let x = 0; x <= 4; x++) {
-                let index = y * 5 + x
-                let moisture = soil[index]
+                let i = y * 5 + x
+                let level = soilLevel[i]
 
-                if (moisture > 0) {
-                    led.plotBrightness(
-                        x,
-                        y,
-                        moistureToBrightness(moisture)
-                    )
-                } else {
+                if (level <= 0) {
                     led.unplot(x, y)
+                } else {
+                    led.plotBrightness(x, y, levelToBrightness(level))
                 }
             }
         }
     }
 
-    function diffuseOnceInternal() {
-        ensureInit()
-
-        for (let i = 0; i <= 24; i++) {
-            nextSoil[i] = soil[i]
-        }
-
-        for (let y = 0; y <= 4; y++) {
-            for (let x = 0; x <= 4; x++) {
-                let index = y * 5 + x
-                let source = soil[index]
-
-                if (source > 0) {
-                    let spreadValue = Math.round(
-                        source * SPREAD_PERCENT / 100
-                    )
-
-                    if (x > 0 && spreadValue > nextSoil[index - 1]) {
-                        nextSoil[index - 1] = spreadValue
-                    }
-                    if (x < 4 && spreadValue > nextSoil[index + 1]) {
-                        nextSoil[index + 1] = spreadValue
-                    }
-                    if (y > 0 && spreadValue > nextSoil[index - 5]) {
-                        nextSoil[index - 5] = spreadValue
-                    }
-                    if (y < 4 && spreadValue > nextSoil[index + 5]) {
-                        nextSoil[index + 5] = spreadValue
-                    }
-                }
-            }
-        }
-
-        for (let i = 0; i <= 24; i++) {
-            soil[i] = nextSoil[i]
-            if (soil[i] > 255) soil[i] = 255
-        }
-
-        drawSoilInternal()
-    }
-
-    //% blockId=soil_drip_set_sensor_distance
-    //% block="設定感測器距離 %distance"
-    //% distance.min=0 distance.max=4 distance.defl=0
-    //% weight=100
-    export function setSensorDistance(distance: number): void {
-        ensureInit()
-        sensorDistance = Math.constrain(distance, 0, 4)
-        setSensorPositionInternal()
-
-        drawSoilInternal()
+    function flashSensor() {
+        drawSoil()
         led.plotBrightness(sensorX, sensorY, 255)
-        basic.pause(150)
-        drawSoilInternal()
+        basic.pause(180)
+        drawSoil()
     }
 
-    //% blockId=soil_drip_drop_and_diffuse
-    //% block="中央滴水 %drops 次並擴散一次"
-    //% drops.min=1 drops.max=5 drops.defl=1
-    //% weight=90
-    export function dropAndDiffuse(drops: number): void {
+    function sensorLevelInternal(): number {
         ensureInit()
-
-        if (!started) {
-            started = true
-            startTime = control.millis()
-        }
-
-        drops = Math.constrain(drops, 1, 5)
-
-        let center = 12
-
-        for (let i = 0; i < drops; i++) {
-            soil[center] += DROP_AMOUNT
-            if (soil[center] > 255) {
-                soil[center] = 255
-            }
-        }
-
-        diffuseOnceInternal()
+        return soilLevel[sensorY * 5 + sensorX]
     }
 
-    //% blockId=soil_drip_sensor_value
-    //% block="感測器數值"
-    //% weight=80
-    export function sensorValue(): number {
-        ensureInit()
-        let index = sensorY * 5 + sensorX
-        return moistureToSensorValue(soil[index])
+    function sensorValueInternal(): number {
+        let lv = sensorLevelInternal()
+        if (lv < 0) lv = 0
+        if (lv > 4) lv = 4
+        return LEVEL_VALUE[lv]
     }
 
-    //% blockId=soil_drip_show_soil
-    //% block="顯示土壤濕度"
-    //% weight=70
-    export function showSoil(): void {
-        drawSoilInternal()
-    }
-
-    //% blockId=soil_drip_elapsed_seconds
-    //% block="經過時間（秒）"
-    //% weight=60
-    export function elapsedSeconds(): number {
+    function elapsedSecondsInternal(): number {
         if (!started) return 0
         return Math.round((control.millis() - startTime) / 100) / 10
     }
 
-    //% blockId=soil_drip_is_saturated
-    //% block="感測器已飽和"
-    //% weight=50
-    export function isSaturated(): boolean {
-        return sensorValue() <= WET_VALUE
+    function judgeInternal() {
+        let value = sensorValueInternal()
+
+        serial.writeString("目前感測值=")
+        serial.writeNumber(value)
+        serial.writeString("  目標值=")
+        serial.writeNumber(targetValue)
+        serial.writeString("  距離=")
+        serial.writeNumber(sensorDistance)
+        serial.writeString("  已滴=")
+        serial.writeNumber(dropCount)
+        serial.writeString("滴  時間=")
+        serial.writeNumber(elapsedSecondsInternal())
+        serial.writeLine("秒")
+
+        if (value > targetValue) {
+            stopDripping = false
+            serial.writeLine("太乾：請再滴水")
+        } else if (value < targetValue) {
+            stopDripping = true
+            serial.writeLine("太濕：停止滴水")
+        } else {
+            stopDripping = true
+            serial.writeLine("太棒了：剛好達標！")
+        }
     }
 
-    //% blockId=soil_drip_reset
+    function spreadOneDrop() {
+        let newLevel = dropCount
+        if (newLevel > 4) newLevel = 4
+
+        for (let distance = 0; distance <= 4; distance++) {
+            for (let y = 0; y <= 4; y++) {
+                for (let x = 0; x <= 4; x++) {
+                    if (cellDistance(x, y) == distance) {
+                        let i = y * 5 + x
+                        if (newLevel > soilLevel[i]) {
+                            soilLevel[i] = newLevel
+                        }
+                    }
+                }
+            }
+
+            drawSoil()
+
+            if (distance < 4) {
+                basic.pause(CELL_DELAY_MS)
+            }
+        }
+    }
+
+    //% blockId=soil_challenge_start
+    //% block="開始土壤濕度挑戰"
+    //% weight=100
+    export function startChallenge(): void {
+        resetState()
+
+        targetLevel = randint(1, 4)
+        targetValue = LEVEL_VALUE[targetLevel]
+
+        serial.writeLine("")
+        serial.writeLine("=== 土壤濕度控制挑戰 ===")
+        serial.writeString("目標感測值 = ")
+        serial.writeNumber(targetValue)
+        serial.writeLine("")
+        serial.writeLine("A：設定感測器位置")
+        serial.writeLine("B：滴水")
+        serial.writeLine("數值越低代表越濕")
+        serial.writeLine("四階：608 / 415 / 223 / 30")
+        serial.writeLine("")
+
+        flashSensor()
+    }
+
+    //% blockId=soil_challenge_enable_a
+    //% block="按 A 設定感測器位置"
+    //% weight=90
+    export function enableSensorPositionButton(): void {
+        if (aEnabled) return
+        aEnabled = true
+
+        input.onButtonPressed(Button.A, function () {
+            if (started) {
+                serial.writeLine("實驗已開始，感測器位置已鎖定")
+                return
+            }
+
+            sensorDistance += 1
+            if (sensorDistance > 4) {
+                sensorDistance = 0
+            }
+
+            setSensorPositionInternal()
+
+            serial.writeString("感測器距離=")
+            serial.writeNumber(sensorDistance)
+            serial.writeString("  位置=(")
+            serial.writeNumber(sensorX)
+            serial.writeString(",")
+            serial.writeNumber(sensorY)
+            serial.writeLine(")")
+
+            flashSensor()
+        })
+    }
+
+    //% blockId=soil_challenge_enable_b
+    //% block="按 B 滴水並自動擴散判斷"
+    //% weight=80
+    export function enableDripButton(): void {
+        if (bEnabled) return
+        bEnabled = true
+
+        input.onButtonPressed(Button.B, function () {
+            if (stopDripping) {
+                judgeInternal()
+                return
+            }
+
+            if (!started) {
+                started = true
+                startTime = control.millis()
+            }
+
+            if (dropCount >= 4) {
+                stopDripping = true
+                serial.writeLine("已滴4滴，中心已達飽和下限30")
+                judgeInternal()
+                return
+            }
+
+            dropCount += 1
+
+            serial.writeLine("")
+            serial.writeString("第 ")
+            serial.writeNumber(dropCount)
+            serial.writeLine(" 滴")
+
+            spreadOneDrop()
+            judgeInternal()
+        })
+    }
+
+    //% blockId=soil_challenge_show_data
+    //% block="顯示目前實驗資料"
+    //% weight=70
+    export function showCurrentData(): void {
+        judgeInternal()
+    }
+
+    //% blockId=soil_challenge_on_target
+    //% block="目前濕度剛好達標"
+    //% weight=60
+    export function isOnTarget(): boolean {
+        return sensorValueInternal() == targetValue
+    }
+
+    //% blockId=soil_challenge_reset
     //% block="重設土壤實驗"
-    //% weight=40
-    export function reset(): void {
-        soil = []
-        nextSoil = []
-        ensureInit()
-        basic.clearScreen()
+    //% weight=50
+    export function resetExperiment(): void {
+        resetState()
+        serial.writeLine("實驗已重設")
+        flashSensor()
     }
 }
