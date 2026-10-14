@@ -1,3 +1,0 @@
-SoilDripChallenge.startChallenge()
-SoilDripChallenge.enableSensorPositionButton()
-SoilDripChallenge.enableDripButton()
