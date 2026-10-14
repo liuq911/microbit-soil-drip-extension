@@ -1,7 +1,7 @@
 {
-  "name": "soil-drip-challenge",
-  "version": "0.0.2",
-  "description": "High-level micro:bit blocks for a 5x5 soil moisture drip irrigation challenge",
+  "name": "soil-drip-control-v3",
+  "version": "0.0.3",
+  "description": "5x5 soil moisture control simulation with distance-dependent drip demand, evaporation and automatic control",
   "dependencies": {
     "core": "*"
   },

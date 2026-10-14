@@ -1,45 +1,50 @@
-//% color="#3C9D4E" weight=90 icon="\uf043" block="土壤滴灌挑戰"
-namespace SoilDripChallenge {
-    let LEVEL_VALUE: number[] = [800, 608, 415, 223, 30]
-    let CELL_DELAY_MS = 1000
+//% color="#3C9D4E" weight=90 icon="\uf043" block="土壤滴灌控制"
+namespace SoilDripControl {
+    let DRY_VALUE = 800
+    let SATURATED_VALUE = 30
+    let DEFAULT_LOW = 100
+    let DEFAULT_HIGH = 200
 
-    let soilLevel: number[] = []
+    let CELL_DELAY_MS = 1000
+    let EVAP_INTERVAL_MS = 4000
+    let EVAP_AMOUNT = 0.12
+
+    let REQUIRED_DROPS: number[] = [2, 3, 4, 5, 6]
+    let water: number[] = []
+
     let sensorDistance = 0
     let sensorX = 2
     let sensorY = 2
 
-    let targetLevel = 2
-    let targetValue = 415
-    let dropCount = 0
     let started = false
     let startTime = 0
-    let stopDripping = false
+    let dropCount = 0
 
     let aEnabled = false
     let bEnabled = false
+    let evaporationStarted = false
+
+    let autoRunning = false
+    let autoLow = 100
+    let autoHigh = 200
+    let autoCheckMs = 2000
 
     function ensureInit() {
-        if (soilLevel.length == 25) return
-
-        soilLevel = []
-        for (let i = 0; i <= 24; i++) {
-            soilLevel.push(0)
-        }
+        if (water.length == 25) return
+        water = []
+        for (let i = 0; i <= 24; i++) water.push(0)
     }
 
     function resetState() {
-        soilLevel = []
+        water = []
         ensureInit()
-
         sensorDistance = 0
         sensorX = 2
         sensorY = 2
-
-        dropCount = 0
         started = false
         startTime = 0
-        stopDripping = false
-
+        dropCount = 0
+        autoRunning = false
         basic.clearScreen()
     }
 
@@ -66,27 +71,27 @@ namespace SoilDripChallenge {
         return Math.abs(x - 2) + Math.abs(y - 2)
     }
 
-    function levelToBrightness(level: number): number {
-        if (level <= 0) return 0
-        if (level == 1) return 70
-        if (level == 2) return 130
-        if (level == 3) return 195
-        return 255
+    function elapsedSecondsInternal(): number {
+        if (!started) return 0
+        return Math.round((control.millis() - startTime) / 100) / 10
+    }
+
+    function waterToBrightness(units: number): number {
+        if (units <= 0) return 0
+        let brightness = Math.round(units * 255 / 6)
+        if (brightness < 25) brightness = 25
+        if (brightness > 255) brightness = 255
+        return brightness
     }
 
     function drawSoil() {
         ensureInit()
-
         for (let y = 0; y <= 4; y++) {
             for (let x = 0; x <= 4; x++) {
                 let i = y * 5 + x
-                let level = soilLevel[i]
-
-                if (level <= 0) {
-                    led.unplot(x, y)
-                } else {
-                    led.plotBrightness(x, y, levelToBrightness(level))
-                }
+                let b = waterToBrightness(water[i])
+                if (b <= 0) led.unplot(x, y)
+                else led.plotBrightness(x, y, b)
             }
         }
     }
@@ -98,186 +103,274 @@ namespace SoilDripChallenge {
         drawSoil()
     }
 
-    function sensorLevelInternal(): number {
-        ensureInit()
-        return soilLevel[sensorY * 5 + sensorX]
-    }
-
     function sensorValueInternal(): number {
-        let lv = sensorLevelInternal()
-        if (lv < 0) lv = 0
-        if (lv > 4) lv = 4
-        return LEVEL_VALUE[lv]
+        ensureInit()
+        let units = water[sensorY * 5 + sensorX]
+        let need = REQUIRED_DROPS[sensorDistance]
+        let reductionPerDrop = 650 / need
+        let value = Math.round(DRY_VALUE - units * reductionPerDrop)
+        if (value < SATURATED_VALUE) value = SATURATED_VALUE
+        if (value > DRY_VALUE) value = DRY_VALUE
+        return value
     }
 
-    function elapsedSecondsInternal(): number {
-        if (!started) return 0
-        return Math.round((control.millis() - startTime) / 100) / 10
-    }
-
-    function judgeInternal() {
-        let value = sensorValueInternal()
-
-        serial.writeString("目前感測值=")
-        serial.writeNumber(value)
-        serial.writeString("  目標值=")
-        serial.writeNumber(targetValue)
+    function printCurrentData() {
+        serial.writeString("感測值=")
+        serial.writeNumber(sensorValueInternal())
         serial.writeString("  距離=")
         serial.writeNumber(sensorDistance)
-        serial.writeString("  已滴=")
+        serial.writeString("  滴數=")
         serial.writeNumber(dropCount)
-        serial.writeString("滴  時間=")
+        serial.writeString("  時間=")
         serial.writeNumber(elapsedSecondsInternal())
         serial.writeLine("秒")
-
-        if (value > targetValue) {
-            stopDripping = false
-            serial.writeLine("太乾：請再滴水")
-        } else if (value < targetValue) {
-            stopDripping = true
-            serial.writeLine("太濕：停止滴水")
-        } else {
-            stopDripping = true
-            serial.writeLine("太棒了：剛好達標！")
-        }
     }
 
-    function spreadOneDrop() {
-        let newLevel = dropCount
-        if (newLevel > 4) newLevel = 4
+    function judgeRange(low: number, high: number) {
+        let value = sensorValueInternal()
+        printCurrentData()
+        if (value > high) serial.writeLine("太乾：需要滴水")
+        else if (value < low) serial.writeLine("太濕：停止滴水")
+        else serial.writeLine("太棒了：濕度達標")
+    }
+
+    function dropAndSpreadInternal() {
+        ensureInit()
+
+        if (!started) {
+            started = true
+            startTime = control.millis()
+        }
+
+        dropCount += 1
+        serial.writeLine("")
+        serial.writeString("第 ")
+        serial.writeNumber(dropCount)
+        serial.writeLine(" 滴開始擴散")
 
         for (let distance = 0; distance <= 4; distance++) {
             for (let y = 0; y <= 4; y++) {
                 for (let x = 0; x <= 4; x++) {
                     if (cellDistance(x, y) == distance) {
-                        let i = y * 5 + x
-                        if (newLevel > soilLevel[i]) {
-                            soilLevel[i] = newLevel
-                        }
+                        water[y * 5 + x] += 1
+                        if (water[y * 5 + x] > 8) water[y * 5 + x] = 8
                     }
                 }
             }
 
             drawSoil()
 
-            if (distance < 4) {
-                basic.pause(CELL_DELAY_MS)
+            if (distance == sensorDistance) {
+                serial.writeString("水到達感測器：")
+                serial.writeNumber(elapsedSecondsInternal())
+                serial.writeString("秒  感測值=")
+                serial.writeNumber(sensorValueInternal())
+                serial.writeLine("")
             }
+
+            if (distance < 4) basic.pause(CELL_DELAY_MS)
         }
     }
 
-    //% blockId=soil_challenge_start
-    //% block="開始土壤濕度挑戰"
+    function startEvaporationInternal() {
+        if (evaporationStarted) return
+        evaporationStarted = true
+
+        control.inBackground(function () {
+            while (true) {
+                basic.pause(EVAP_INTERVAL_MS)
+
+                ensureInit()
+                let changed = false
+
+                for (let i = 0; i <= 24; i++) {
+                    if (water[i] > 0) {
+                        water[i] -= EVAP_AMOUNT
+                        if (water[i] < 0) water[i] = 0
+                        changed = true
+                    }
+                }
+
+                if (changed) drawSoil()
+            }
+        })
+    }
+
+    //% blockId=soil_control_start
+    //% block="開始土壤濕度控制實驗"
     //% weight=100
-    export function startChallenge(): void {
+    export function startExperiment(): void {
         resetState()
-
-        targetLevel = randint(1, 4)
-        targetValue = LEVEL_VALUE[targetLevel]
+        startEvaporationInternal()
 
         serial.writeLine("")
-        serial.writeLine("=== 土壤濕度控制挑戰 ===")
-        serial.writeString("目標感測值 = ")
-        serial.writeNumber(targetValue)
-        serial.writeLine("")
-        serial.writeLine("A：設定感測器位置")
-        serial.writeLine("B：滴水")
-        serial.writeLine("數值越低代表越濕")
-        serial.writeLine("四階：608 / 415 / 223 / 30")
+        serial.writeLine("=== 土壤濕度控制實驗 ===")
+        serial.writeLine("控制目標：100 ~ 200")
+        serial.writeLine("800 = 乾；數值越低越濕")
+        serial.writeLine("A：選感測器位置")
+        serial.writeLine("B：依判斷滴水")
+        serial.writeLine("水每1秒擴散1格")
+        serial.writeLine("系統同時持續蒸發")
         serial.writeLine("")
 
         flashSensor()
     }
 
-    //% blockId=soil_challenge_enable_a
+    //% blockId=soil_control_button_a
     //% block="按 A 設定感測器位置"
     //% weight=90
-    export function enableSensorPositionButton(): void {
+    export function enableSensorButton(): void {
         if (aEnabled) return
         aEnabled = true
 
         input.onButtonPressed(Button.A, function () {
-            if (started) {
-                serial.writeLine("實驗已開始，感測器位置已鎖定")
+            if (started || autoRunning) {
+                serial.writeLine("控制已開始，感測器位置已鎖定")
                 return
             }
 
             sensorDistance += 1
-            if (sensorDistance > 4) {
-                sensorDistance = 0
-            }
+            if (sensorDistance > 4) sensorDistance = 0
 
             setSensorPositionInternal()
 
             serial.writeString("感測器距離=")
             serial.writeNumber(sensorDistance)
-            serial.writeString("  位置=(")
-            serial.writeNumber(sensorX)
-            serial.writeString(",")
-            serial.writeNumber(sensorY)
-            serial.writeLine(")")
+            serial.writeString("  預計約需")
+            serial.writeNumber(REQUIRED_DROPS[sensorDistance])
+            serial.writeLine("滴可到約150")
 
             flashSensor()
         })
     }
 
-    //% blockId=soil_challenge_enable_b
-    //% block="按 B 滴水並自動擴散判斷"
+    //% blockId=soil_control_button_b
+    //% block="按 B 判斷並控制滴水"
     //% weight=80
-    export function enableDripButton(): void {
+    export function enableManualControlButton(): void {
         if (bEnabled) return
         bEnabled = true
 
         input.onButtonPressed(Button.B, function () {
-            if (stopDripping) {
-                judgeInternal()
+            if (autoRunning) {
+                serial.writeLine("目前正在自動控制")
                 return
             }
 
-            if (!started) {
-                started = true
-                startTime = control.millis()
+            let value = sensorValueInternal()
+
+            if (value > DEFAULT_HIGH) {
+                serial.writeLine("太乾：滴1滴")
+                dropAndSpreadInternal()
+                judgeRange(DEFAULT_LOW, DEFAULT_HIGH)
+            } else if (value < DEFAULT_LOW) {
+                serial.writeLine("太濕：停止滴水")
+                printCurrentData()
+            } else {
+                serial.writeLine("太棒了：濕度達標，不滴水")
+                printCurrentData()
             }
-
-            if (dropCount >= 4) {
-                stopDripping = true
-                serial.writeLine("已滴4滴，中心已達飽和下限30")
-                judgeInternal()
-                return
-            }
-
-            dropCount += 1
-
-            serial.writeLine("")
-            serial.writeString("第 ")
-            serial.writeNumber(dropCount)
-            serial.writeLine(" 滴")
-
-            spreadOneDrop()
-            judgeInternal()
         })
     }
 
-    //% blockId=soil_challenge_show_data
-    //% block="顯示目前實驗資料"
+    //% blockId=soil_control_show
+    //% block="顯示目前控制資料"
     //% weight=70
     export function showCurrentData(): void {
-        judgeInternal()
+        judgeRange(DEFAULT_LOW, DEFAULT_HIGH)
     }
 
-    //% blockId=soil_challenge_on_target
-    //% block="目前濕度剛好達標"
+    //% blockId=soil_control_evaporation
+    //% block="啟動土壤蒸發模擬"
+    //% weight=65
+    export function startEvaporation(): void {
+        startEvaporationInternal()
+        serial.writeLine("蒸發模擬已啟動")
+    }
+
+    //% blockId=soil_control_sensor_value
+    //% block="目前感測器數值"
     //% weight=60
-    export function isOnTarget(): boolean {
-        return sensorValueInternal() == targetValue
+    export function sensorValue(): number {
+        return sensorValueInternal()
     }
 
-    //% blockId=soil_challenge_reset
-    //% block="重設土壤實驗"
+    //% blockId=soil_control_one_drop
+    //% block="滴一滴並完成擴散"
+    //% weight=55
+    export function oneDropAndSpread(): void {
+        dropAndSpreadInternal()
+    }
+
+    //% blockId=soil_control_auto
+    //% block="自動控制濕度 下限 %low 上限 %high 每 %checkSeconds 秒檢查"
+    //% low.defl=100 high.defl=200 checkSeconds.defl=2
+    //% low.min=30 low.max=799
+    //% high.min=31 high.max=800
+    //% checkSeconds.min=1 checkSeconds.max=30
     //% weight=50
+    export function autoControl(low: number, high: number, checkSeconds: number): void {
+        if (autoRunning) return
+
+        if (low >= high) {
+            serial.writeLine("設定錯誤：下限必須小於上限")
+            return
+        }
+
+        autoLow = low
+        autoHigh = high
+        autoCheckMs = Math.round(checkSeconds * 1000)
+        autoRunning = true
+
+        if (!started) {
+            started = true
+            startTime = control.millis()
+        }
+
+        startEvaporationInternal()
+
+        serial.writeLine("")
+        serial.writeString("自動控制開始：")
+        serial.writeNumber(autoLow)
+        serial.writeString(" ~ ")
+        serial.writeNumber(autoHigh)
+        serial.writeLine("")
+
+        control.inBackground(function () {
+            while (autoRunning) {
+                let value = sensorValueInternal()
+
+                if (value > autoHigh) {
+                    serial.writeLine("AUTO：太乾 -> 滴1滴")
+                    dropAndSpreadInternal()
+                    judgeRange(autoLow, autoHigh)
+                } else if (value < autoLow) {
+                    serial.writeLine("AUTO：太濕 -> 等待蒸發")
+                    printCurrentData()
+                } else {
+                    serial.writeLine("AUTO：濕度正常 -> 等待")
+                    printCurrentData()
+                }
+
+                basic.pause(autoCheckMs)
+            }
+        })
+    }
+
+    //% blockId=soil_control_stop_auto
+    //% block="停止自動控制"
+    //% weight=40
+    export function stopAutoControl(): void {
+        autoRunning = false
+        serial.writeLine("自動控制已停止")
+    }
+
+    //% blockId=soil_control_reset
+    //% block="重設土壤控制實驗"
+    //% weight=30
     export function resetExperiment(): void {
         resetState()
-        serial.writeLine("實驗已重設")
+        serial.writeLine("土壤控制實驗已重設")
         flashSensor()
     }
 }
